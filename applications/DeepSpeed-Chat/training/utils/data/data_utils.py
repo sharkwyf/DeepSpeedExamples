@@ -15,6 +15,7 @@ import os
 import hashlib
 from itertools import chain
 from . import raw_datasets
+from .templates import format_to_sentence
 
 
 def get_raw_dataset(dataset_name, output_path, seed, local_rank):
@@ -109,13 +110,14 @@ def get_raw_dataset_split_index(local_rank, output_path, dataset_name, seed,
 class PromptDataset(Dataset):
 
     def __init__(self, prompt_dataset, chosen_dataset, reject_dataset,
-                 pad_token_id, train_phase) -> None:
+                 pad_token_id, train_phase, use_coh) -> None:
         super().__init__()
         self.prompt_dataset = prompt_dataset
         self.chosen_dataset = chosen_dataset
         self.reject_dataset = reject_dataset
         self.pad_token_id = pad_token_id
         self.train_phase = train_phase
+        self.use_coh = use_coh
 
     def __len__(self):
         length = len(self.chosen_dataset)
@@ -125,11 +127,19 @@ class PromptDataset(Dataset):
 
     def __getitem__(self, idx):
         if self.train_phase == 1:
-            return {
-                "input_ids": self.chosen_dataset[idx]["input_ids"],
-                "attention_mask": self.chosen_dataset[idx]["attention_mask"],
-                "labels": self.chosen_dataset[idx]["input_ids"]
-            }
+            if self.use_coh:
+                return {
+                    "input_ids": self.chosen_dataset[idx]["input_ids"],
+                    "loss_masks": self.chosen_dataset[idx]["loss_masks"],
+                    "attention_mask": self.chosen_dataset[idx]["attention_mask"],
+                    "labels": self.chosen_dataset[idx]["input_ids"]
+                }
+            else:
+                return {
+                    "input_ids": self.chosen_dataset[idx]["input_ids"],
+                    "attention_mask": self.chosen_dataset[idx]["attention_mask"],
+                    "labels": self.chosen_dataset[idx]["input_ids"]
+                }
         elif self.train_phase == 2:
             return self.chosen_dataset[idx]["input_ids"], self.chosen_dataset[idx]["attention_mask"], \
                 self.reject_dataset[idx]["input_ids"], self.reject_dataset[idx]["attention_mask"]
@@ -139,27 +149,76 @@ class PromptDataset(Dataset):
 
 
 def create_dataset_split(current_dataset, raw_dataset, train_phase, tokenizer,
-                         end_of_conversation_token, max_seq_len):
+                         end_of_conversation_token, max_seq_len, use_coh):
     prompt_dataset = []
     chosen_dataset = []
     reject_dataset = []
     if train_phase == 1:
-        for i, tmp_data in enumerate(current_dataset):
-            # tokenize the text
-            chosen_sentence = raw_dataset.get_prompt_and_chosen(
-                tmp_data)  # the accept response
-            if chosen_sentence is not None:
-                chosen_sentence += end_of_conversation_token
-                chosen_token = tokenizer(chosen_sentence,
-                                         max_length=max_seq_len,
-                                         padding="max_length",
-                                         truncation=True,
-                                         return_tensors="pt")
-                chosen_token["input_ids"] = chosen_token["input_ids"].squeeze(
-                    0)
-                chosen_token["attention_mask"] = chosen_token[
-                    "attention_mask"].squeeze(0)
-                chosen_dataset.append(chosen_token)
+        if use_coh:
+            total = 0
+            truncated = 0
+            for i, tmp_data in enumerate(current_dataset):
+                # tokenize the text
+                prompt_sentence = raw_dataset.get_prompt(
+                    tmp_data)
+                chosen_sentence = raw_dataset.get_chosen(
+                    tmp_data)
+                reject_sentence = raw_dataset.get_rejected(
+                    tmp_data)
+                
+                if prompt_sentence.endswith("Assistant:"):
+                    prompt_sentence = prompt_sentence[:-10]
+                                
+                if prompt_sentence is not None and chosen_sentence is not None and reject_sentence is not None:
+                    input_ids, loss_masks = format_to_sentence(tokenizer, prompt_sentence, chosen_sentence, reject_sentence, end_of_conversation_token)
+                    assert len(loss_masks) == len(input_ids), "sizes of loss_masks and input_ids should be the same"
+                    
+                    while True:
+                        seq_len = len(input_ids)
+                        attention_mask = np.ones(max_seq_len)
+                        if seq_len > max_seq_len:
+                            chosen_token = {
+                                "input_ids": input_ids[:max_seq_len],
+                                "loss_masks": loss_masks[:max_seq_len],
+                                "attention_mask": attention_mask,
+                            }
+                            chosen_dataset.append(chosen_token)
+                            total += 1
+                            truncated += 1
+
+                            input_ids = input_ids[max_seq_len:]
+                            loss_masks = loss_masks[max_seq_len:]
+                        else:
+                            input_ids = input_ids + [tokenizer.pad_token_id] * (max_seq_len - seq_len)
+                            loss_masks = loss_masks + [0] * (max_seq_len - seq_len)
+                            attention_mask[seq_len:] = 0
+
+                            chosen_token = {
+                                "input_ids": input_ids,
+                                "loss_masks": loss_masks,
+                                "attention_mask": attention_mask,
+                            }
+                            chosen_dataset.append(chosen_token)
+                            total += 1
+                            break
+            print(f"Total data items: {total}, truncated: {truncated}")
+        else:
+            for i, tmp_data in enumerate(current_dataset):
+                # tokenize the text
+                chosen_sentence = raw_dataset.get_prompt_and_chosen(
+                    tmp_data)  # the accept response
+                if chosen_sentence is not None:
+                    chosen_sentence += end_of_conversation_token
+                    chosen_token = tokenizer(chosen_sentence,
+                                            max_length=max_seq_len,
+                                            padding="max_length",
+                                            truncation=True,
+                                            return_tensors="pt")
+                    chosen_token["input_ids"] = chosen_token["input_ids"].squeeze(
+                        0)
+                    chosen_token["attention_mask"] = chosen_token[
+                        "attention_mask"].squeeze(0)
+                    chosen_dataset.append(chosen_token)
 
     elif train_phase == 2:
         for i, tmp_data in enumerate(current_dataset):
@@ -208,12 +267,12 @@ def create_dataset_split(current_dataset, raw_dataset, train_phase, tokenizer,
                     prompt_token[key_word] = y
                 prompt_dataset.append(prompt_token)
     return PromptDataset(prompt_dataset, chosen_dataset, reject_dataset,
-                         tokenizer.pad_token_id, train_phase)
+                         tokenizer.pad_token_id, train_phase, use_coh)
 
 
 def create_dataset(local_rank, dataset_name, data_split, output_path,
                    train_phase, seed, tokenizer, end_of_conversation_token,
-                   max_seq_len):
+                   max_seq_len, use_coh=False):
     raw_dataset = get_raw_dataset(dataset_name, output_path, seed, local_rank)
     train_dataset = raw_dataset.get_train_data()
     train_index = get_raw_dataset_split_index(local_rank, output_path,
@@ -225,7 +284,7 @@ def create_dataset(local_rank, dataset_name, data_split, output_path,
     train_dataset = create_dataset_split(train_dataset, raw_dataset,
                                          train_phase, tokenizer,
                                          end_of_conversation_token,
-                                         max_seq_len)
+                                         max_seq_len, use_coh)
 
     eval_dataset = raw_dataset.get_eval_data()
     eval_index = get_raw_dataset_split_index(local_rank, output_path,
@@ -236,7 +295,7 @@ def create_dataset(local_rank, dataset_name, data_split, output_path,
     eval_dataset = Subset(eval_dataset, eval_index)
     eval_dataset = create_dataset_split(eval_dataset, raw_dataset, train_phase,
                                         tokenizer, end_of_conversation_token,
-                                        max_seq_len)
+                                        max_seq_len, use_coh)
     return train_dataset, eval_dataset
 
 
@@ -249,7 +308,8 @@ def create_prompt_dataset(local_rank,
                           tokenizer,
                           max_seq_len,
                           end_of_conversation_token="<|endoftext|>",
-                          sft_only_data_path=[]):
+                          sft_only_data_path=[],
+                          use_coh=False):
     """
     Creates the prompt dataset
     """
@@ -272,7 +332,7 @@ def create_prompt_dataset(local_rank,
         if len(data_path) == 1:  # Single dataset.
             train_dataset, eval_dataset = create_dataset(
                 local_rank, data_path[0], data_split, output_path, train_phase,
-                seed, tokenizer, end_of_conversation_token, max_seq_len)
+                seed, tokenizer, end_of_conversation_token, max_seq_len, use_coh)
         else:  # Blending datasets.
             train_datasets = []
             eval_datasets = []
@@ -281,7 +341,7 @@ def create_prompt_dataset(local_rank,
             for d_path in data_path:
                 train_dataset, eval_dataset = create_dataset(
                     local_rank, d_path, data_split, output_path, train_phase,
-                    seed, tokenizer, end_of_conversation_token, max_seq_len)
+                    seed, tokenizer, end_of_conversation_token, max_seq_len, use_coh)
                 train_datasets.append(train_dataset)
                 eval_datasets.append(eval_dataset)
                 train_size += len(train_dataset)
@@ -310,6 +370,7 @@ def create_prompt_dataset(local_rank,
                     tokenizer,
                     end_of_conversation_token,
                     max_seq_len,
+                    use_coh,
                 )
                 sft_train_datasets.append(sft_train_dataset)
                 sft_eval_datasets.append(sft_eval_dataset)

@@ -9,6 +9,7 @@ import math
 import sys
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 
@@ -24,7 +25,7 @@ from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 
 sys.path.append(
     os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir)))
-from utils.data.data_utils import create_prompt_dataset
+from utils.data.data_utils import create_prompt_dataset, MiniDataset, get_unsupervised_data
 from utils.utils import print_rank_0, to_device, save_hf_format, set_random_seed, get_all_reduce_mean, get_optimizer_grouped_parameters, save_zero_three_model, load_hf_tokenizer
 from utils.ds_utils import get_train_ds_config
 from utils.module.lora import convert_linear_layer_to_lora, convert_lora_to_linear_layer, only_optimize_lora_parameters
@@ -60,6 +61,22 @@ def parse_args():
         help=
         'Where to store the data-related files such as shuffle index. This needs to be on a local storage of a node (not on a shared storage)'
     )
+    parser.add_argument(
+        "--unsupervised_dataset_name",
+        type=str,
+        default=None,
+        help="The name of the dataset to use (via the datasets library).")
+    parser.add_argument(
+        "--unsupervised_dataset_config_name",
+        type=str,
+        default=None,
+        help=
+        "The configuration name of the dataset to use (via the datasets library)."
+    )
+    parser.add_argument("--unsup_coef",
+                        type=float,
+                        default=0.,
+                        help='''pretrain loss weight in COH''')
     parser.add_argument(
         "--model_name_or_path",
         type=str,
@@ -161,6 +178,15 @@ def parse_args():
     parser.add_argument('--only_optimize_lora',
                         action='store_true',
                         help='Only optimize the LoRA parameters.')
+    ## COH training
+    parser.add_argument('--use_coh',
+                        action='store_true',
+                        help='If use COH training, with loss masks & templates')
+    ## wandb logging
+    parser.add_argument('--no_wandb',
+                        action='store_true',
+                        help='If not use wandb logging')
+    
     parser = deepspeed.add_config_arguments(parser)
     args = parser.parse_args()
 
@@ -171,6 +197,60 @@ def parse_args():
         ), "--gradient_checkpointing and --only_optimize_lora cannot be enabled at the same time."
 
     return args
+
+
+def create_datasets(args, tokenizer, train_phase):
+    # Prepare the data
+    prompt_train_dataset, prompt_eval_dataset = create_prompt_dataset(
+        args.local_rank,
+        args.data_path,
+        args.data_split,
+        args.data_output_path,
+        train_phase,
+        args.seed,
+        tokenizer,
+        args.max_seq_len,
+        sft_only_data_path=args.sft_only_data_path,
+        use_coh=args.use_coh)
+    unsupervised_training_enabled = args.unsupervised_dataset_name and args.unsupervised_dataset_config_name
+    if unsupervised_training_enabled:
+        unsupervised_train_dataset = get_unsupervised_data(args, tokenizer)
+    else:
+        unsupervised_train_dataset = None
+
+    # DataLoaders creation:
+    if args.local_rank == -1:
+        prompt_train_sampler = RandomSampler(prompt_train_dataset)
+        prompt_eval_sampler = SequentialSampler(prompt_eval_dataset)
+        if unsupervised_training_enabled:
+            unsupervised_train_sampler = RandomSampler(
+                unsupervised_train_dataset)
+    else:
+        prompt_train_sampler = DistributedSampler(prompt_train_dataset)
+        prompt_eval_sampler = DistributedSampler(prompt_eval_dataset)
+        if unsupervised_training_enabled:
+            unsupervised_train_sampler = DistributedSampler(
+                unsupervised_train_dataset)
+    prompt_train_dataloader = DataLoader(prompt_train_dataset,
+                                  collate_fn=default_data_collator,
+                                  sampler=prompt_train_sampler,
+                                  batch_size=args.per_device_train_batch_size)
+    prompt_eval_dataloader = DataLoader(prompt_eval_dataset,
+                                 collate_fn=default_data_collator,
+                                 sampler=prompt_eval_sampler,
+                                 batch_size=args.per_device_eval_batch_size)
+    
+    if unsupervised_training_enabled:
+        unsupervised_train_dataloader = DataLoader(
+            unsupervised_train_dataset,
+            collate_fn=default_data_collator,
+            sampler=unsupervised_train_sampler,
+            batch_size=args.per_device_train_batch_size)
+    else:
+        unsupervised_train_dataloader = [None] * len(
+            prompt_train_dataloader)  # basically a dummy dataloader
+
+    return prompt_train_dataloader, prompt_eval_dataloader, unsupervised_train_dataloader
 
 
 def main():
@@ -200,6 +280,18 @@ def main():
 
     assert not args.offload, "zero-offload is not currently supported but coming soon!"
 
+    # wandb logger
+    use_wandb = args.local_rank <= 0 and not args.no_wandb
+    if use_wandb:
+        import wandb
+        wandb.init(
+            name=args.model_name_or_path,
+            project="CoH",
+            config=args,
+            tags=[args.model_name_or_path],
+            reinit=True,
+        )
+
     torch.distributed.barrier()
 
     tokenizer = load_hf_tokenizer(args.model_name_or_path, fast_tokenizer=True)
@@ -217,40 +309,16 @@ def main():
         if args.only_optimize_lora:
             model = only_optimize_lora_parameters(model)
 
-    # Prepare the data
-    train_phase = 1
-    train_dataset, eval_dataset = create_prompt_dataset(
-        args.local_rank,
-        args.data_path,
-        args.data_split,
-        args.data_output_path,
-        train_phase,
-        args.seed,
-        tokenizer,
-        args.max_seq_len,
-        sft_only_data_path=args.sft_only_data_path)
-
-    # DataLoaders creation:
-    if args.local_rank == -1:
-        train_sampler = RandomSampler(train_dataset)
-        eval_sampler = SequentialSampler(eval_dataset)
-    else:
-        train_sampler = DistributedSampler(train_dataset)
-        eval_sampler = DistributedSampler(eval_dataset)
-    train_dataloader = DataLoader(train_dataset,
-                                  collate_fn=default_data_collator,
-                                  sampler=train_sampler,
-                                  batch_size=args.per_device_train_batch_size)
-    eval_dataloader = DataLoader(eval_dataset,
-                                 collate_fn=default_data_collator,
-                                 sampler=eval_sampler,
-                                 batch_size=args.per_device_eval_batch_size)
+    prompt_train_dataloader, prompt_eval_dataloader, unsupervised_train_dataloader = create_datasets(
+        args=args, tokenizer=tokenizer, train_phase=1)
 
     def evaluation(model, eval_dataloader):
         model.eval()
         losses = 0
         for step, batch in enumerate(eval_dataloader):
             batch = to_device(batch, device)
+            if "loss_masks" in batch:
+                batch.pop("loss_masks")
             with torch.no_grad():
                 outputs = model(**batch)
 
@@ -277,7 +345,7 @@ def main():
                               betas=(0.9, 0.95))
 
     num_update_steps_per_epoch = math.ceil(
-        len(train_dataloader) / args.gradient_accumulation_steps)
+        len(prompt_train_dataloader) / args.gradient_accumulation_steps)
     lr_scheduler = get_scheduler(
         name=args.lr_scheduler_type,
         optimizer=optimizer,
@@ -301,27 +369,65 @@ def main():
     print_rank_0(
         f"***** Evaluating perplexity, Epoch {0}/{args.num_train_epochs} *****",
         args.global_rank)
-    perplexity = evaluation(model, eval_dataloader)
+    perplexity = evaluation(model, prompt_eval_dataloader)
     print_rank_0(f"ppl: {perplexity}", args.global_rank)
+    if use_wandb:
+        wandb.log({
+            "eval/ppl": perplexity,
+        })
 
     for epoch in range(args.num_train_epochs):
         print_rank_0(
-            f"Beginning of Epoch {epoch+1}/{args.num_train_epochs}, Total Micro Batches {len(train_dataloader)}",
+            f"Beginning of Epoch {epoch+1}/{args.num_train_epochs}, Total Micro Batches {len(prompt_train_dataloader)}",
             args.global_rank)
         model.train()
-        for step, batch in enumerate(train_dataloader):
-            batch = to_device(batch, device)
-            outputs = model(**batch, use_cache=False)
-            loss = outputs.loss
-            model.backward(loss)
+        for step, (batch_prompt, batch_unsupervised) in enumerate(
+                zip(prompt_train_dataloader, unsupervised_train_dataloader)):
+            batch_prompt = to_device(batch_prompt, device)
+            if args.use_coh:
+                loss_masks = batch_prompt.pop("loss_masks")[:, 1:]
+                labels = batch_prompt.pop("labels")[:, 1:]
+                
+                outputs = model(**batch_prompt, use_cache=False)
+
+                loss = F.cross_entropy(outputs.logits[:, :-1].permute(0, 2, 1), labels, reduction='none')
+
+                # print("Entering pos 1"); from IPython import embed; embed();
+                
+                loss = (loss * loss_masks).mean()
+            else:
+                outputs = model(**batch_prompt, use_cache=False)
+                loss = outputs.loss
+
+            if args.unsup_coef > 0:
+                batch_unsupervised = to_device(batch_unsupervised, device)
+                # TODO: check if is correct
+                outputs = model(**batch_unsupervised, use_cache=False)
+                unsup_loss = outputs.loss
+            else:
+                unsup_loss = 0
+
+            total_loss = loss + args.unsup_coef * unsup_loss
+
+            model.backward(total_loss)
             model.step()
+
+            if use_wandb:
+                wandb.log({
+                    "train/loss": loss.cpu().item(),
+                    "train/unsup_loss": unsup_loss.cpu().item() if args.unsup_coef > 0 else unsup_loss,
+                })
 
         # Evaluate perplexity on the validation set.
         print_rank_0(
             f"***** Evaluating perplexity, Epoch {epoch+1}/{args.num_train_epochs} *****",
             args.global_rank)
-        perplexity = evaluation(model, eval_dataloader)
+        perplexity = evaluation(model, prompt_eval_dataloader)
         print_rank_0(f"ppl: {perplexity}", args.global_rank)
+        if use_wandb:
+            wandb.log({
+                "eval/ppl": perplexity,
+            })
         model.tput_timer.update_epoch_count()
 
     if args.output_dir is not None:
