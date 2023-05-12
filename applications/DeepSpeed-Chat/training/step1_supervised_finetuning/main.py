@@ -182,6 +182,9 @@ def parse_args():
     parser.add_argument('--use_coh',
                         action='store_true',
                         help='If use COH training, with loss masks & templates')
+    parser.add_argument('--loss_on_reject',
+                        action='store_true',
+                        help='If calculate loss on rejected samples')
     ## wandb logging
     parser.add_argument('--no_wandb',
                         action='store_true',
@@ -211,7 +214,8 @@ def create_datasets(args, tokenizer, train_phase):
         tokenizer,
         args.max_seq_len,
         sft_only_data_path=args.sft_only_data_path,
-        use_coh=args.use_coh)
+        use_coh=args.use_coh,
+        loss_on_reject=args.loss_on_reject)
     unsupervised_training_enabled = args.unsupervised_dataset_name and args.unsupervised_dataset_config_name
     if unsupervised_training_enabled:
         unsupervised_train_dataset = get_unsupervised_data(args, tokenizer)
@@ -318,7 +322,7 @@ def main():
         for step, batch in enumerate(eval_dataloader):
             batch = to_device(batch, device)
             if "loss_masks" in batch:
-                batch.pop("loss_masks")
+                loss_masks = batch.pop("loss_masks")
             with torch.no_grad():
                 outputs = model(**batch)
 
@@ -398,6 +402,8 @@ def main():
             else:
                 outputs = model(**batch_prompt, use_cache=False)
                 loss = outputs.loss
+
+                # print("Entering pos 2"); from IPython import embed; embed();
 
             if args.unsup_coef > 0:
                 batch_unsupervised = to_device(batch_unsupervised, device)

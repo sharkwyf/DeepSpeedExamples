@@ -149,7 +149,7 @@ class PromptDataset(Dataset):
 
 
 def create_dataset_split(current_dataset, raw_dataset, train_phase, tokenizer,
-                         end_of_conversation_token, max_seq_len, use_coh):
+                         end_of_conversation_token, max_seq_len, use_coh, loss_on_reject):
     prompt_dataset = []
     chosen_dataset = []
     reject_dataset = []
@@ -170,7 +170,7 @@ def create_dataset_split(current_dataset, raw_dataset, train_phase, tokenizer,
                     prompt_sentence = prompt_sentence[:-10]
                                 
                 if prompt_sentence is not None and chosen_sentence is not None and reject_sentence is not None:
-                    input_ids, loss_masks = format_to_sentence(tokenizer, prompt_sentence, chosen_sentence, reject_sentence, end_of_conversation_token)
+                    input_ids, loss_masks = format_to_sentence(tokenizer, prompt_sentence, chosen_sentence, reject_sentence, end_of_conversation_token, loss_on_reject=loss_on_reject)
                     assert len(loss_masks) == len(input_ids), "sizes of loss_masks and input_ids should be the same"
                     
                     while True:
@@ -182,15 +182,17 @@ def create_dataset_split(current_dataset, raw_dataset, train_phase, tokenizer,
                                 "loss_masks": loss_masks[:max_seq_len],
                                 "attention_mask": attention_mask,
                             }
-                            chosen_dataset.append(chosen_token)
+                            if np.array(loss_masks[:max_seq_len]).any():
+                                chosen_dataset.append(chosen_token)
                             total += 1
                             truncated += 1
 
                             input_ids = input_ids[max_seq_len:]
                             loss_masks = loss_masks[max_seq_len:]
+                            # break   # TODO: test
                         else:
                             input_ids = input_ids + [tokenizer.pad_token_id] * (max_seq_len - seq_len)
-                            loss_masks = loss_masks + [0] * (max_seq_len - seq_len)
+                            loss_masks = loss_masks + [1] * (max_seq_len - seq_len)
                             attention_mask[seq_len:] = 0
 
                             chosen_token = {
@@ -198,7 +200,8 @@ def create_dataset_split(current_dataset, raw_dataset, train_phase, tokenizer,
                                 "loss_masks": loss_masks,
                                 "attention_mask": attention_mask,
                             }
-                            chosen_dataset.append(chosen_token)
+                            if np.array(loss_masks).any():
+                                chosen_dataset.append(chosen_token)
                             total += 1
                             break
             print(f"Total data items: {total}, truncated: {truncated}")
@@ -272,7 +275,7 @@ def create_dataset_split(current_dataset, raw_dataset, train_phase, tokenizer,
 
 def create_dataset(local_rank, dataset_name, data_split, output_path,
                    train_phase, seed, tokenizer, end_of_conversation_token,
-                   max_seq_len, use_coh=False):
+                   max_seq_len, use_coh=False, loss_on_reject=False):
     raw_dataset = get_raw_dataset(dataset_name, output_path, seed, local_rank)
     train_dataset = raw_dataset.get_train_data()
     train_index = get_raw_dataset_split_index(local_rank, output_path,
@@ -284,7 +287,7 @@ def create_dataset(local_rank, dataset_name, data_split, output_path,
     train_dataset = create_dataset_split(train_dataset, raw_dataset,
                                          train_phase, tokenizer,
                                          end_of_conversation_token,
-                                         max_seq_len, use_coh)
+                                         max_seq_len, use_coh, loss_on_reject)
 
     eval_dataset = raw_dataset.get_eval_data()
     eval_index = get_raw_dataset_split_index(local_rank, output_path,
@@ -295,7 +298,7 @@ def create_dataset(local_rank, dataset_name, data_split, output_path,
     eval_dataset = Subset(eval_dataset, eval_index)
     eval_dataset = create_dataset_split(eval_dataset, raw_dataset, train_phase,
                                         tokenizer, end_of_conversation_token,
-                                        max_seq_len, use_coh)
+                                        max_seq_len, use_coh, loss_on_reject)
     return train_dataset, eval_dataset
 
 
@@ -309,7 +312,8 @@ def create_prompt_dataset(local_rank,
                           max_seq_len,
                           end_of_conversation_token="<|endoftext|>",
                           sft_only_data_path=[],
-                          use_coh=False):
+                          use_coh=False,
+                          loss_on_reject=False):
     """
     Creates the prompt dataset
     """
@@ -332,7 +336,7 @@ def create_prompt_dataset(local_rank,
         if len(data_path) == 1:  # Single dataset.
             train_dataset, eval_dataset = create_dataset(
                 local_rank, data_path[0], data_split, output_path, train_phase,
-                seed, tokenizer, end_of_conversation_token, max_seq_len, use_coh)
+                seed, tokenizer, end_of_conversation_token, max_seq_len, use_coh, loss_on_reject)
         else:  # Blending datasets.
             train_datasets = []
             eval_datasets = []
@@ -341,7 +345,7 @@ def create_prompt_dataset(local_rank,
             for d_path in data_path:
                 train_dataset, eval_dataset = create_dataset(
                     local_rank, d_path, data_split, output_path, train_phase,
-                    seed, tokenizer, end_of_conversation_token, max_seq_len, use_coh)
+                    seed, tokenizer, end_of_conversation_token, max_seq_len, use_coh, loss_on_reject)
                 train_datasets.append(train_dataset)
                 eval_datasets.append(eval_dataset)
                 train_size += len(train_dataset)
@@ -371,6 +375,7 @@ def create_prompt_dataset(local_rank,
                     end_of_conversation_token,
                     max_seq_len,
                     use_coh,
+                    loss_on_reject,
                 )
                 sft_train_datasets.append(sft_train_dataset)
                 sft_eval_datasets.append(sft_eval_dataset)
