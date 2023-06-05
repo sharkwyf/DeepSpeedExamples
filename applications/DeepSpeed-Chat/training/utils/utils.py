@@ -6,7 +6,7 @@ import os
 import torch
 import random
 import numpy as np
-from transformers import set_seed, AutoTokenizer
+from transformers import set_seed, AutoTokenizer, LlamaTokenizer
 import json
 import deepspeed
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
@@ -48,12 +48,26 @@ def load_hf_tokenizer(model_name_or_path, fast_tokenizer=True):
         model_json = os.path.join(model_name_or_path, "config.json")
         if os.path.exists(model_json):
             model_json_file = json.load(open(model_json))
-            model_name = model_json_file["_name_or_path"]
-            tokenizer = AutoTokenizer.from_pretrained(model_name,
-                                                      fast_tokenizer=True)
+            
+            if 'llama' not in model_name_or_path:
+                model_name = model_json_file["_name_or_path"]
+                tokenizer = AutoTokenizer.from_pretrained(model_name,fast_tokenizer=True)
+            else :
+                tokenizer = LlamaTokenizer.from_pretrained(model_name_or_path,fast_tokenizer=False)
+                tokenizer.pad_token_id = 0
+                tokenizer.bos_token_id = 1
+                tokenizer.eos_token_id = 2
+                tokenizer.padding_side = "left"
+            
     else:
-        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path,
-                                                  fast_tokenizer=True)
+        if 'llama' not in model_name_or_path:
+            tokenizer = AutoTokenizer.from_pretrained(model_name_or_path,fast_tokenizer=True)
+        else :
+            tokenizer = LlamaTokenizer.from_pretrained(model_name_or_path,fast_tokenizer=False)
+            tokenizer.pad_token_id = 0
+            tokenizer.bos_token_id = 1
+            tokenizer.eos_token_id = 2
+            tokenizer.padding_side = "left"
     return tokenizer
 
 

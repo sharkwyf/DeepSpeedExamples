@@ -30,6 +30,8 @@ from utils.utils import print_rank_0, to_device, save_hf_format, set_random_seed
 from utils.ds_utils import get_train_ds_config
 from utils.module.lora import convert_linear_layer_to_lora, convert_lora_to_linear_layer, only_optimize_lora_parameters
 from utils.model.model_utils import create_hf_model
+sys.path.append("../evaluation")
+from eval_for_train import run_single_evaluation
 
 
 def parse_args():
@@ -374,10 +376,16 @@ def main():
         f"***** Evaluating perplexity, Epoch {0}/{args.num_train_epochs} *****",
         args.global_rank)
     perplexity = evaluation(model, prompt_eval_dataloader)
+    average_reward = run_single_evaluation(model, tokenizer, args.output_dir, 0, args.global_rank)
+    torch.distributed.barrier()
     print_rank_0(f"ppl: {perplexity}", args.global_rank)
+    print_rank_0(f"average_reward: {average_reward}", args.global_rank)
+    
+
     if use_wandb:
         wandb.log({
             "eval/ppl": perplexity,
+            "eval/reward": average_reward,
         })
 
     for epoch in range(args.num_train_epochs):
@@ -429,10 +437,15 @@ def main():
             f"***** Evaluating perplexity, Epoch {epoch+1}/{args.num_train_epochs} *****",
             args.global_rank)
         perplexity = evaluation(model, prompt_eval_dataloader)
+        average_reward = run_single_evaluation(model, tokenizer, args.output_dir, epoch+1, args.global_rank)
+        torch.distributed.barrier()
         print_rank_0(f"ppl: {perplexity}", args.global_rank)
+        print_rank_0(f"average_reward: {average_reward}", args.global_rank)
+
         if use_wandb:
             wandb.log({
                 "eval/ppl": perplexity,
+                "eval/reward": average_reward,
             })
         model.tput_timer.update_epoch_count()
 
