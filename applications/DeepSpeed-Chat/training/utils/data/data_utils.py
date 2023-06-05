@@ -189,7 +189,7 @@ def create_dataset_split(current_dataset, raw_dataset, train_phase, tokenizer,
 
                             input_ids = input_ids[max_seq_len:]
                             loss_masks = loss_masks[max_seq_len:]
-                            # break   # TODO: test
+                            break   # TODO: test
                         else:
                             input_ids = input_ids + [tokenizer.pad_token_id] * (max_seq_len - seq_len)
                             loss_masks = loss_masks + [1] * (max_seq_len - seq_len)
