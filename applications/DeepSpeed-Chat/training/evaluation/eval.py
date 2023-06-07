@@ -160,10 +160,10 @@ def change_prompt(prompts, generate_method=1):
     if generate_method == 1:
         return prompts
     if generate_method == 2:
+        new_prompts= []
         for i, prompt in enumerate(prompts):
-            prompts[i] = prompts[i][:-10] + "good answer:\nAssistance: "  
-        return prompts
-
+            new_prompts.append(prompt + "good answer:\nAssistance: ")
+        return new_prompts
 
 
 def run_single_evaluation(args):

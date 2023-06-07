@@ -50,9 +50,10 @@ def change_prompt(prompts, generate_method=1):
     if generate_method == 1:
         return prompts
     if generate_method == 2:
+        new_prompts= []
         for i, prompt in enumerate(prompts):
-            prompts[i] = prompts[i][:-10] + "good answer:\nAssistance: "  
-        return prompts
+            new_prompts.append(prompt + "good answer:\nAssistance: ")
+        return new_prompts
 
 
 
@@ -144,6 +145,7 @@ def run_single_evaluation(model, tokenizer, model_output_path, epoch, rank, gene
         prompts = tokenizer.batch_decode(batch,
                                     skip_special_tokens=True,
                                     clean_up_tokenization_spaces=False)
+        # print(list(prompts))
         info['prompts'] = list(prompts)
         prompts = change_prompt(prompts, generate_method)
         
@@ -193,7 +195,7 @@ def run_single_evaluation(model, tokenizer, model_output_path, epoch, rank, gene
             results = tokenizer.batch_decode( torch.stack(gather_list).view(-1, 1024),
                                     skip_special_tokens=True,
                                     clean_up_tokenization_spaces=False)
-            inputs_ = change_prompt(prompts)
+            inputs_ = change_prompt(prompts, generate_method)
 
             for i in range( len(prompts)):
                 prompt = prompts[i]

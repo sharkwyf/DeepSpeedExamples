@@ -291,7 +291,7 @@ def main():
     if use_wandb:
         import wandb
         wandb.init(
-            name=args.model_name_or_path,
+            name=args.model_name_or_path.split("/")[-1],
             project="CoH",
             config=args,
             tags=[args.model_name_or_path],
@@ -376,7 +376,7 @@ def main():
         f"***** Evaluating perplexity, Epoch {0}/{args.num_train_epochs} *****",
         args.global_rank)
     perplexity = evaluation(model, prompt_eval_dataloader)
-    average_reward = run_single_evaluation(model, tokenizer, args.output_dir, 0, args.global_rank)
+    average_reward = run_single_evaluation(model, tokenizer, args.output_dir, 0, args.global_rank, 2 if args.use_coh else 1)
     torch.distributed.barrier()
     print_rank_0(f"ppl: {perplexity}", args.global_rank)
     print_rank_0(f"average_reward: {average_reward}", args.global_rank)
@@ -437,7 +437,7 @@ def main():
             f"***** Evaluating perplexity, Epoch {epoch+1}/{args.num_train_epochs} *****",
             args.global_rank)
         perplexity = evaluation(model, prompt_eval_dataloader)
-        average_reward = run_single_evaluation(model, tokenizer, args.output_dir, epoch+1, args.global_rank)
+        average_reward = run_single_evaluation(model, tokenizer, args.output_dir, epoch+1, args.global_rank, 2 if args.use_coh else 1)
         torch.distributed.barrier()
         print_rank_0(f"ppl: {perplexity}", args.global_rank)
         print_rank_0(f"average_reward: {average_reward}", args.global_rank)
