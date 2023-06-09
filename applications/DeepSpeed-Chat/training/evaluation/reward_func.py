@@ -26,8 +26,8 @@ def create_reward_fn():
             returns = torch.gather(rewards, 1, ends).squeeze(-1)
             return returns
 
-    reward_model = RewardModel("/cpfs01/user/liuzhixuan/gpt-j-6B", reward_tokenizer.eos_token_id)
-    checkpoint = "/cpfs01/user/liuzhixuan/reward_model_gptj_rm_static/hf_ckpt.pt" # 
+    reward_model = RewardModel("/cpfs01/shared/LVLM/transformers/hub/gpt-j-6B", reward_tokenizer.eos_token_id)
+    checkpoint = "/cpfs01/shared/LVLM/transformers/hub/reward_model_gptj_rm_static/hf_ckpt.pt" # 
     ckpt_state = torch.load(checkpoint)
     ckpt_state = {k:v for k, v in ckpt_state.items() if not k.startswith('model.')}
     reward_model.load_state_dict(ckpt_state, strict=False)

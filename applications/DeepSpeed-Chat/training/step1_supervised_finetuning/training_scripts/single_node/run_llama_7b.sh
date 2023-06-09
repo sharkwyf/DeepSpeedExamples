@@ -6,8 +6,9 @@ export HF_HOME=/cpfs01/shared/LVLM/transformers
 # DeepSpeed Team
 OUTPUT=$1
 ZERO_STAGE=$2
+ACTOR_MODLE_PATH=/cpfs01/shared/LVLM/transformers/hub/llama-7b-hf/snapshots/5f98eefcc80e437ef68d457ad7bf167c2c6a1348
 if [ "$OUTPUT" == "" ]; then
-    OUTPUT=./output_llama7b_coh
+    OUTPUT=./output_llama7b_t
 fi
 if [ "$ZERO_STAGE" == "" ]; then
     ZERO_STAGE=2
@@ -17,16 +18,18 @@ mkdir -p $OUTPUT
 #bash training_scripts/single_node/run_llama_7b.sh
 #Dahoas/full-hh-rlhf Dahoas/synthetic-instruct-gptj-pairwise yitingxie/rlhf-reward-datasets Dahoas/rm-static \
 #stanfordnlp/SHP
+# Dahoas/synthetic-instruct-gptj-pairwise yitingxie/rlhf-reward-datasets openai/webgpt_comparisons
+# Dahoas/synthetic-instruct-gptj-pairwise yitingxie/rlhf-reward-datasets openai/webgpt_comparisons stanfordnlp/SHP
 deepspeed main.py \
-   --data_path Dahoas/rm-static Dahoas/full-hh-rlhf Dahoas/synthetic-instruct-gptj-pairwise yitingxie/rlhf-reward-datasets openai/webgpt_comparisons \
+   --data_path Dahoas/full-hh-rlhf  \
    --data_split 2,4,4 \
-   --model_name_or_path ./training_scripts/single_node/llama-7b  \
+   --model_name_or_path $ACTOR_MODLE_PATH  \
    --per_device_train_batch_size 6 \
    --per_device_eval_batch_size 6 \
    --max_seq_len 512 \
    --learning_rate 9.65e-6 \
    --weight_decay 0. \
-   --num_train_epochs 2  \
+   --num_train_epochs 2 \
    --gradient_accumulation_steps 1 \
    --lr_scheduler_type cosine \
    --num_warmup_steps 0 \
@@ -34,5 +37,4 @@ deepspeed main.py \
    --zero_stage $ZERO_STAGE \
    --deepspeed \
    --output_dir $OUTPUT \
-   --use_coh \
    &> $OUTPUT/training.log

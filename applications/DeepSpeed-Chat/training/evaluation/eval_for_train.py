@@ -41,7 +41,7 @@ from tqdm import tqdm
 
 def get_cache_file_name(model_path, epoch, generate_method=1):
     model_path = os.path.abspath(model_path)
-    cache_file_template = '/cpfs01/user/liuzhixuan/DeepSpeedExamples/applications/DeepSpeed-Chat/training/evaluation/cache/cache_{}'
+    cache_file_template = 'cache/cache_{}'
     cache_file = cache_file_template.format(model_path.replace('/', '_'))
     cache_file += str(generate_method) + "_epoch{}".format(epoch)
     return cache_file
