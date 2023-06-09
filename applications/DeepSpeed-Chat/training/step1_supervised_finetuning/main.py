@@ -294,7 +294,7 @@ def main():
             name=args.model_name_or_path.split("/")[-1],
             project="CoH",
             config=args,
-            tags=[args.model_name_or_path],
+            tags=[],
             reinit=True,
         )
 
