@@ -285,6 +285,11 @@ def parse_args():
     parser.add_argument('--enable_ema',
                         action='store_true',
                         help='Enable EMA checkpoint for the model.')
+                        
+    ## wandb logging
+    parser.add_argument('--no_wandb',
+                        action='store_true',
+                        help='If not use wandb logging')
 
     parser = deepspeed.add_config_arguments(parser)
     args = parser.parse_args()
@@ -376,6 +381,18 @@ def main():
 
     # If passed along, set the training seed now.
     set_random_seed(args.seed)
+    
+    use_wandb = args.local_rank <= 0 and not args.no_wandb
+    if use_wandb:
+        import wandb
+        wandb.init(
+            name="{}_{}".format(args.actor_model_name_or_path.split("/")[-1], args.critic_model_name_or_path.split("/")[-1]),
+            project="CoH",
+            config=args,
+            tags=["step3"],
+            reinit=True,
+        )
+
     torch.distributed.barrier()
 
     # create common tokenizer based on actor model
@@ -471,6 +488,16 @@ def main():
                 print_rank_0(
                     "-------------------------------------------------------------------------------------",
                     args.global_rank)
+
+                if use_wandb:
+                    wandb.log({
+                        "train/step": step,
+                        "train/ppo_ep": ppo_ep+1,
+                        "train/act_loss": actor_loss_sum/inner_iter,
+                        "train/cri_loss": critic_loss_sum/inner_iter,
+                        "train/unsuper_loss": unsup_loss_sum/inner_iter,
+                        "train/average_reward_score": average_reward/inner_iter,
+                    })
 
             if args.actor_gradient_checkpointing:
                 rlhf_engine.actor.gradient_checkpointing_disable()

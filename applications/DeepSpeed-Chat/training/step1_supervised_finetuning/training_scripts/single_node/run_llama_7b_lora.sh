@@ -36,6 +36,9 @@ deepspeed main.py \
    --num_warmup_steps 0 \
    --seed 1234 \
    --zero_stage $ZERO_STAGE \
+   --lora_dim 128 \
+   --gradient_checkpointing \
+   --lora_module_name layers. \
    --deepspeed \
    --output_dir $OUTPUT \
    --use_coh \

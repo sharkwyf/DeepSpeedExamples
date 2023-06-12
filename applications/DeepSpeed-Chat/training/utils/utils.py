@@ -57,7 +57,7 @@ def load_hf_tokenizer(model_name_or_path, fast_tokenizer=True):
                 tokenizer.pad_token_id = 0
                 tokenizer.bos_token_id = 1
                 tokenizer.eos_token_id = 2
-                tokenizer.padding_side = "left"
+                # tokenizer.padding_side = "right"
             
     else:
         if 'llama' not in model_name_or_path:
@@ -67,7 +67,7 @@ def load_hf_tokenizer(model_name_or_path, fast_tokenizer=True):
             tokenizer.pad_token_id = 0
             tokenizer.bos_token_id = 1
             tokenizer.eos_token_id = 2
-            tokenizer.padding_side = "left"
+            # tokenizer.padding_side = "right"
     return tokenizer
 
 

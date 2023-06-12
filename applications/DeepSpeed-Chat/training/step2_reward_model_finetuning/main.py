@@ -161,6 +161,12 @@ def parse_args():
     parser.add_argument('--only_optimize_lora',
                         action='store_true',
                         help='Only optimize the LoRA parameters.')
+
+    ## wandb logging
+    parser.add_argument('--no_wandb',
+                        action='store_true',
+                        help='If not use wandb logging')
+
     parser = deepspeed.add_config_arguments(parser)
     args = parser.parse_args()
 
@@ -199,6 +205,18 @@ def main():
 
     # If passed along, set the training seed now.
     set_random_seed(args.seed)
+    
+    use_wandb = args.local_rank <= 0 and not args.no_wandb
+    if use_wandb:
+        import wandb
+        wandb.init(
+            name=args.model_name_or_path.split("/")[-1],
+            project="CoH",
+            config=args,
+            tags=["step2"],
+            reinit=True,
+        )
+
     torch.distributed.barrier()
 
     tokenizer = load_hf_tokenizer(args.model_name_or_path, fast_tokenizer=True)
@@ -308,6 +326,12 @@ def main():
         f"chosen_last_scores (higher is better) : {reward_score}, acc (higher is better) : {acc}",
         args.global_rank)
 
+    if use_wandb:
+        wandb.log({
+            "eval/chosen_last_scores": reward_score,
+            "eval/acc": acc,
+        })
+
     for epoch in range(args.num_train_epochs):
         print_rank_0(
             f"Beginning of Epoch {epoch+1}/{args.num_train_epochs}, Total Micro Batches {len(train_dataloader)}",
@@ -321,6 +345,11 @@ def main():
             rm_model.backward(loss)
             rm_model.step()
             mean_loss += loss.item()
+            if use_wandb:
+                wandb.log({
+                    "train/loss": loss.item(),
+                })
+
         print_rank_0(
             f"Epoch {epoch+1}/{args.num_train_epochs} with loss {mean_loss/(step+1)}",
             args.global_rank)
@@ -333,6 +362,12 @@ def main():
             f"chosen_last_scores (higher is better) : {reward_score}, acc (higher is better) : {acc}",
             args.global_rank)
         rm_model.tput_timer.update_epoch_count()
+        
+        if use_wandb:
+            wandb.log({
+                "eval/chosen_last_scores": reward_score,
+                "eval/acc": acc,
+            })
 
     if args.output_dir is not None:
         print_rank_0('saving model ...', args.global_rank)

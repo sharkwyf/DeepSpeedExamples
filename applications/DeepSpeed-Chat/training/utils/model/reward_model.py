@@ -44,13 +44,22 @@ class RewardModel(nn.Module):
                 use_cache=False):
         loss = None
 
-        transformer_outputs = self.rwtranrsformer(
-            input_ids,
-            past_key_values=past_key_values,
-            attention_mask=attention_mask,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache)
+        if type(self.rwtranrsformer).__name__ == "LlamaModel":
+            transformer_outputs = self.rwtranrsformer(
+                input_ids,
+                past_key_values=past_key_values,
+                attention_mask=attention_mask,
+                # head_mask=head_mask,  # TODO(yuanfu): contexted for LLAMA
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache)
+        else:
+            transformer_outputs = self.rwtranrsformer(
+                input_ids,
+                past_key_values=past_key_values,
+                attention_mask=attention_mask,
+                head_mask=head_mask,
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache)
 
         hidden_states = transformer_outputs[0]
         rewards = self.v_head(hidden_states).squeeze(-1)
@@ -92,6 +101,8 @@ class RewardModel(nn.Module):
                 ) if len(r_inds) > self.num_padding_at_beginning else seq_len
                 end_ind = max(c_ind, r_ind)
                 divergence_ind = check_divergence[0]
+            if not divergence_ind > 0:
+                from IPython import embed; embed();
             assert divergence_ind > 0
             c_truncated_reward = chosen_reward[divergence_ind:end_ind]
             r_truncated_reward = rejected_reward[divergence_ind:end_ind]
@@ -122,13 +133,22 @@ class RewardModel(nn.Module):
                       prompt_length=0,
                       use_cache=False):
 
-        transformer_outputs = self.rwtranrsformer(
-            input_ids,
-            past_key_values=past_key_values,
-            attention_mask=attention_mask,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache)
+        if type(self.rwtranrsformer).__name__ == "LlamaModel":
+            transformer_outputs = self.rwtranrsformer(
+                input_ids,
+                past_key_values=past_key_values,
+                attention_mask=attention_mask,
+                # head_mask=head_mask, # TODO
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache)
+        else:
+            transformer_outputs = self.rwtranrsformer(
+                input_ids,
+                past_key_values=past_key_values,
+                attention_mask=attention_mask,
+                head_mask=head_mask,
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache)
         hidden_states = transformer_outputs[0]
         values = self.v_head(hidden_states).squeeze(-1)
         if return_value_only:
